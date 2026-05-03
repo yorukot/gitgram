@@ -31,6 +31,9 @@ func TelegramHTML(a activity.Activity) string {
 		writeNumberedTitle(&b, a.Number, a.Title)
 		writeActor(&b, a.Actor)
 		writeBranchPair(&b, a.Branch, a.BaseBranch)
+		if strings.TrimSpace(a.Summary) != "" {
+			writeSummary(&b, a.Summary)
+		}
 		writeLink(&b, a.URL)
 	case activity.EventIssues:
 		writeLine(&b, "<b>"+esc(a.Repo)+"</b> issue "+esc(a.Action))

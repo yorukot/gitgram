@@ -57,7 +57,7 @@ func TestParseWorkflowRunFailure(t *testing.T) {
 	}
 }
 
-func TestParsePush(t *testing.T) {
+func TestParsePushIgnored(t *testing.T) {
 	body := []byte(`{
 		"ref": "refs/heads/main",
 		"compare": "https://github.com/owner/repo/compare/a...b",
@@ -73,17 +73,149 @@ func TestParsePush(t *testing.T) {
 		]
 	}`)
 
-	got, err := ParseEvent(activity.EventPush, "delivery-3", body)
+	_, err := ParseEvent(activity.EventPush, "delivery-3", body)
+	if !errors.Is(err, ErrIgnored) {
+		t.Fatalf("expected ErrIgnored, got %v", err)
+	}
+}
+
+func TestParsePullRequestSynchronizeIgnored(t *testing.T) {
+	body := []byte(`{
+		"action": "synchronize",
+		"number": 12,
+		"repository": {"full_name": "owner/repo"},
+		"sender": {"login": "octocat"},
+		"pull_request": {
+			"html_url": "https://github.com/owner/repo/pull/12",
+			"title": "Add login",
+			"number": 12,
+			"head": {"ref": "feature/login"},
+			"base": {"ref": "main"}
+		}
+	}`)
+
+	_, err := ParseEvent(activity.EventPullRequest, "delivery-4", body)
+	if !errors.Is(err, ErrIgnored) {
+		t.Fatalf("expected ErrIgnored, got %v", err)
+	}
+}
+
+func TestParsePullRequestReviewRequested(t *testing.T) {
+	body := []byte(`{
+		"action": "review_requested",
+		"number": 12,
+		"repository": {"full_name": "owner/repo"},
+		"sender": {"login": "octocat"},
+		"requested_reviewer": {"login": "mona"},
+		"pull_request": {
+			"html_url": "https://github.com/owner/repo/pull/12",
+			"title": "Add login",
+			"number": 12,
+			"head": {"ref": "feature/login"},
+			"base": {"ref": "main"}
+		}
+	}`)
+
+	got, err := ParseEvent(activity.EventPullRequest, "delivery-5", body)
 	if err != nil {
 		t.Fatalf("ParseEvent returned error: %v", err)
 	}
-	if got.Branch != "main" {
-		t.Fatalf("branch = %q, want main", got.Branch)
+	if got.Action != "review requested" {
+		t.Fatalf("action = %q, want review requested", got.Action)
 	}
-	if len(got.Commits) != 1 {
-		t.Fatalf("len(commits) = %d, want 1", len(got.Commits))
+	if got.Summary != "review requested from mona" {
+		t.Fatalf("summary = %q, want review requested from mona", got.Summary)
 	}
-	if got.Commits[0].Message != "Fix login" {
-		t.Fatalf("message = %q, want first line", got.Commits[0].Message)
+}
+
+func TestParseIssuesClosedIgnored(t *testing.T) {
+	body := []byte(`{
+		"action": "closed",
+		"repository": {"full_name": "owner/repo"},
+		"sender": {"login": "octocat"},
+		"issue": {
+			"html_url": "https://github.com/owner/repo/issues/42",
+			"title": "Cannot login",
+			"number": 42
+		}
+	}`)
+
+	_, err := ParseEvent(activity.EventIssues, "delivery-6", body)
+	if !errors.Is(err, ErrIgnored) {
+		t.Fatalf("expected ErrIgnored, got %v", err)
+	}
+}
+
+func TestParseIssueCommentIgnored(t *testing.T) {
+	body := []byte(`{
+		"action": "created",
+		"repository": {"full_name": "owner/repo"},
+		"sender": {"login": "octocat"},
+		"issue": {
+			"html_url": "https://github.com/owner/repo/issues/42",
+			"title": "Cannot login",
+			"number": 42
+		},
+		"comment": {
+			"html_url": "https://github.com/owner/repo/issues/42#issuecomment-1",
+			"body": "too noisy"
+		}
+	}`)
+
+	_, err := ParseEvent(activity.EventIssueComment, "delivery-7", body)
+	if !errors.Is(err, ErrIgnored) {
+		t.Fatalf("expected ErrIgnored, got %v", err)
+	}
+}
+
+func TestParsePullRequestReviewCommentedIgnored(t *testing.T) {
+	body := []byte(`{
+		"action": "submitted",
+		"repository": {"full_name": "owner/repo"},
+		"sender": {"login": "octocat"},
+		"pull_request": {
+			"html_url": "https://github.com/owner/repo/pull/12",
+			"title": "Add login",
+			"number": 12
+		},
+		"review": {
+			"html_url": "https://github.com/owner/repo/pull/12#pullrequestreview-1",
+			"state": "commented",
+			"body": "just a comment"
+		}
+	}`)
+
+	_, err := ParseEvent(activity.EventPullRequestReview, "delivery-8", body)
+	if !errors.Is(err, ErrIgnored) {
+		t.Fatalf("expected ErrIgnored, got %v", err)
+	}
+}
+
+func TestParsePullRequestReviewChangesRequested(t *testing.T) {
+	body := []byte(`{
+		"action": "submitted",
+		"repository": {"full_name": "owner/repo"},
+		"sender": {"login": "octocat"},
+		"pull_request": {
+			"html_url": "https://github.com/owner/repo/pull/12",
+			"title": "Add login",
+			"number": 12
+		},
+		"review": {
+			"html_url": "https://github.com/owner/repo/pull/12#pullrequestreview-1",
+			"state": "changes_requested",
+			"body": "Please add tests."
+		}
+	}`)
+
+	got, err := ParseEvent(activity.EventPullRequestReview, "delivery-9", body)
+	if err != nil {
+		t.Fatalf("ParseEvent returned error: %v", err)
+	}
+	if got.Action != "changes_requested" {
+		t.Fatalf("action = %q, want changes_requested", got.Action)
+	}
+	if got.Summary != "Please add tests." {
+		t.Fatalf("summary = %q, want review body", got.Summary)
 	}
 }

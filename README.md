@@ -6,7 +6,7 @@ GitHub Webhook to Telegram notification service written in Go.
 
 - 接收 GitHub repository Webhook。
 - 驗證 `X-Hub-Signature-256`。
-- 支援 `push`、`pull_request`、`issues`、`issue_comment`、`pull_request_review`、`release`。
+- 支援重要通知：`pull_request`、`issues`、`pull_request_review`、`release`。
 - 支援 `workflow_run`，但只通知 `conclusion=failure` 的 GitHub Actions 失敗。
 - 使用 Telegram Bot API `sendMessage` 發送 HTML 格式訊息。
 - 使用 `X-GitHub-Delivery` 做 in-memory 去重。
@@ -81,7 +81,7 @@ POST /webhooks/github
 - Payload URL: `https://your-domain.example/webhooks/github`
 - Content type: `application/json`
 - Secret: 和 `GITHUB_WEBHOOK_SECRET` 相同
-- Events: 選擇需要的事件，或先用 `Send me everything`
+- Events: 建議選擇 `Pull requests`、`Issues`、`Pull request reviews`、`Releases`、`Workflow runs`。即使先用 `Send me everything`，服務也只會通知重要事件。
 
 ## Telegram 設定
 
@@ -91,25 +91,7 @@ POST /webhooks/github
 
 ## 訊息格式
 
-服務會使用 Telegram `HTML` parse mode 發送訊息。Repo 名稱會是粗體，branch、actor、commit SHA 會是 monospace，GitHub URL 會顯示成 `Open on GitHub` link。
-
-Push：
-
-```text
-owner/repo push to main
-by octocat
-
-abc1234 Fix login redirect
-def5678 Add tests
-
-Open on GitHub
-```
-
-如果一次 push 超過 5 個 commit，只會列前 5 個，最後補一行：
-
-```text
-... and 3 more commits
-```
+服務會使用 Telegram `HTML` parse mode 發送訊息。Repo 名稱會是粗體，branch 和 actor 會是 monospace，GitHub URL 會顯示成 `Open on GitHub` link。
 
 Pull Request：
 
@@ -121,38 +103,28 @@ feature/login -> main
 Open on GitHub
 ```
 
+`pull_request` 只會通知 `opened`、`reopened`、`ready_for_review`、`review_requested`，以及已 merge 的 `closed`。
+
 Issue：
 
 ```text
-owner/repo issue closed
+owner/repo issue opened
 #42 Cannot login with OAuth
 by octocat
 Open on GitHub
 ```
 
-Issue 或 PR comment：
+`issues` 只會通知 `opened` 和 `reopened`。Issue/PR comments 會被忽略。
+
+Pull Request review requested：
 
 ```text
-owner/repo pull request comment created
+owner/repo pull request review requested
 #12 Add login flow
 by octocat
+feature/login -> main
 
-Can you add one more test for the redirect case?
-
-Open on GitHub
-```
-
-PR comment 會先解析常見 GitHub Markdown，再轉成 Telegram 支援的 HTML。支援範圍包含 bold、italic、strikethrough、inline code、code block、link、blockquote、list、task list。Table 會攤平成文字，raw HTML 會被 escape，unsafe link 會只保留文字。
-
-PR comment body 超過 300 個字元時會被省略，只有 PR comment 會套用這個規則：
-
-```text
-owner/repo pull request comment created
-#12 Add login flow
-by octocat
-
-Very long PR comment body...
-Comment truncated. Open on GitHub for full text.
+review requested from mona
 
 Open on GitHub
 ```
@@ -168,6 +140,8 @@ Please handle the empty token case before merge.
 
 Open on GitHub
 ```
+
+`pull_request_review` 只會通知 `approved` 和 `changes_requested`。一般 review comment 會被忽略。
 
 Release：
 

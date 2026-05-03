@@ -13,14 +13,10 @@ var ErrIgnored = errors.New("github webhook event ignored")
 
 func ParseEvent(eventType, deliveryID string, body []byte) (activity.Activity, error) {
 	switch eventType {
-	case activity.EventPush:
-		return parsePush(deliveryID, body)
 	case activity.EventPullRequest:
 		return parsePullRequest(deliveryID, body)
 	case activity.EventIssues:
 		return parseIssues(deliveryID, body)
-	case activity.EventIssueComment:
-		return parseIssueComment(deliveryID, body)
 	case activity.EventPullRequestReview:
 		return parsePullRequestReview(deliveryID, body)
 	case activity.EventRelease:
@@ -43,57 +39,16 @@ type repository struct {
 	HTMLURL  string `json:"html_url"`
 }
 
-type pushPayload struct {
-	Ref        string     `json:"ref"`
-	Compare    string     `json:"compare"`
-	Repository repository `json:"repository"`
-	Sender     account    `json:"sender"`
-	Pusher     struct {
-		Name string `json:"name"`
-	} `json:"pusher"`
-	Commits []struct {
-		ID      string `json:"id"`
-		Message string `json:"message"`
-		URL     string `json:"url"`
-		Author  struct {
-			Name string `json:"name"`
-		} `json:"author"`
-	} `json:"commits"`
-}
-
-func parsePush(deliveryID string, body []byte) (activity.Activity, error) {
-	var p pushPayload
-	if err := decode(body, &p); err != nil {
-		return activity.Activity{}, fmt.Errorf("parse push payload: %w", err)
-	}
-
-	commits := make([]activity.Commit, 0, len(p.Commits))
-	for _, commit := range p.Commits {
-		commits = append(commits, activity.Commit{
-			SHA:     commit.ID,
-			Message: firstLine(commit.Message),
-			URL:     commit.URL,
-			Author:  commit.Author.Name,
-		})
-	}
-
-	return activity.Activity{
-		DeliveryID: deliveryID,
-		Event:      activity.EventPush,
-		Repo:       p.Repository.FullName,
-		Action:     "pushed",
-		Actor:      firstNonEmpty(p.Sender.Login, p.Pusher.Name),
-		URL:        p.Compare,
-		Branch:     branchFromRef(p.Ref),
-		Commits:    commits,
-	}, nil
-}
-
 type pullRequestPayload struct {
-	Action      string     `json:"action"`
-	Number      int        `json:"number"`
-	Repository  repository `json:"repository"`
-	Sender      account    `json:"sender"`
+	Action            string     `json:"action"`
+	Number            int        `json:"number"`
+	Repository        repository `json:"repository"`
+	Sender            account    `json:"sender"`
+	RequestedReviewer account    `json:"requested_reviewer"`
+	RequestedTeam     struct {
+		Name string `json:"name"`
+		Slug string `json:"slug"`
+	} `json:"requested_team"`
 	PullRequest struct {
 		HTMLURL string  `json:"html_url"`
 		Title   string  `json:"title"`
@@ -115,16 +70,17 @@ func parsePullRequest(deliveryID string, body []byte) (activity.Activity, error)
 		return activity.Activity{}, fmt.Errorf("parse pull_request payload: %w", err)
 	}
 
-	if !oneOf(p.Action, "opened", "closed", "reopened", "synchronize") {
+	action, ok := importantPullRequestAction(p.Action, p.PullRequest.Merged)
+	if !ok {
 		return activity.Activity{}, ErrIgnored
 	}
 
-	action := p.Action
-	if p.Action == "closed" && p.PullRequest.Merged {
-		action = "merged"
-	}
-	if p.Action == "synchronize" {
-		action = "updated"
+	summary := ""
+	if p.Action == "review_requested" {
+		reviewer := firstNonEmpty(p.RequestedReviewer.Login, p.RequestedTeam.Name, p.RequestedTeam.Slug)
+		if reviewer != "" {
+			summary = "review requested from " + reviewer
+		}
 	}
 
 	return activity.Activity{
@@ -138,6 +94,7 @@ func parsePullRequest(deliveryID string, body []byte) (activity.Activity, error)
 		Branch:     p.PullRequest.Head.Ref,
 		BaseBranch: p.PullRequest.Base.Ref,
 		Number:     firstNonZero(p.PullRequest.Number, p.Number),
+		Summary:    summary,
 	}, nil
 }
 
@@ -162,7 +119,7 @@ func parseIssues(deliveryID string, body []byte) (activity.Activity, error) {
 	if p.Issue.PullRequest != nil {
 		return activity.Activity{}, ErrIgnored
 	}
-	if !oneOf(p.Action, "opened", "closed", "reopened") {
+	if !oneOf(p.Action, "opened", "reopened") {
 		return activity.Activity{}, ErrIgnored
 	}
 
@@ -176,52 +133,6 @@ func parseIssues(deliveryID string, body []byte) (activity.Activity, error) {
 		Actor:      firstNonEmpty(p.Sender.Login, p.Issue.User.Login),
 		URL:        p.Issue.HTMLURL,
 		Number:     p.Issue.Number,
-	}, nil
-}
-
-type issueCommentPayload struct {
-	Action     string     `json:"action"`
-	Repository repository `json:"repository"`
-	Sender     account    `json:"sender"`
-	Issue      struct {
-		HTMLURL     string           `json:"html_url"`
-		Title       string           `json:"title"`
-		Number      int              `json:"number"`
-		User        account          `json:"user"`
-		PullRequest *json.RawMessage `json:"pull_request,omitempty"`
-	} `json:"issue"`
-	Comment struct {
-		HTMLURL string  `json:"html_url"`
-		Body    string  `json:"body"`
-		User    account `json:"user"`
-	} `json:"comment"`
-}
-
-func parseIssueComment(deliveryID string, body []byte) (activity.Activity, error) {
-	var p issueCommentPayload
-	if err := decode(body, &p); err != nil {
-		return activity.Activity{}, fmt.Errorf("parse issue_comment payload: %w", err)
-	}
-	if !oneOf(p.Action, "created", "edited") {
-		return activity.Activity{}, ErrIgnored
-	}
-
-	subject := "issue"
-	if p.Issue.PullRequest != nil {
-		subject = "pull request"
-	}
-
-	return activity.Activity{
-		DeliveryID: deliveryID,
-		Event:      activity.EventIssueComment,
-		Repo:       p.Repository.FullName,
-		Action:     p.Action,
-		Subject:    subject,
-		Title:      p.Issue.Title,
-		Actor:      firstNonEmpty(p.Sender.Login, p.Comment.User.Login, p.Issue.User.Login),
-		URL:        firstNonEmpty(p.Comment.HTMLURL, p.Issue.HTMLURL),
-		Number:     p.Issue.Number,
-		Summary:    strings.TrimSpace(p.Comment.Body),
 	}, nil
 }
 
@@ -253,8 +164,8 @@ func parsePullRequestReview(deliveryID string, body []byte) (activity.Activity, 
 	}
 
 	action := strings.TrimSpace(strings.ToLower(p.Review.State))
-	if action == "" {
-		action = "reviewed"
+	if !oneOf(action, "approved", "changes_requested") {
+		return activity.Activity{}, ErrIgnored
 	}
 
 	return activity.Activity{
@@ -358,6 +269,22 @@ func oneOf(value string, allowed ...string) bool {
 	return false
 }
 
+func importantPullRequestAction(action string, merged bool) (string, bool) {
+	switch action {
+	case "opened", "reopened":
+		return action, true
+	case "ready_for_review":
+		return "ready for review", true
+	case "review_requested":
+		return "review requested", true
+	case "closed":
+		if merged {
+			return "merged", true
+		}
+	}
+	return "", false
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		value = strings.TrimSpace(value)
@@ -375,23 +302,4 @@ func firstNonZero(values ...int) int {
 		}
 	}
 	return 0
-}
-
-func branchFromRef(ref string) string {
-	ref = strings.TrimSpace(ref)
-	for _, prefix := range []string{"refs/heads/", "refs/tags/"} {
-		if strings.HasPrefix(ref, prefix) {
-			return strings.TrimPrefix(ref, prefix)
-		}
-	}
-	return ref
-}
-
-func firstLine(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	line, _, _ := strings.Cut(value, "\n")
-	return strings.TrimSpace(line)
 }
